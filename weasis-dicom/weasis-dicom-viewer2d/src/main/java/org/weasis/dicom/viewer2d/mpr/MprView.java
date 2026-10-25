@@ -109,6 +109,7 @@ import org.weasis.dicom.viewer2d.mpr.cmpr.CrossSectionParams;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprAxis;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprView;
 import org.weasis.dicom.viewer2d.mpr.cmpr.VesselCenterline;
+import org.weasis.dicom.viewer2d.mpr.cmpr.VesselPath;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprBuilder;
 
 public class MprView extends View2d implements SliceCanvas, ViewProgress {
@@ -534,6 +535,169 @@ public class MprView extends View2d implements SliceCanvas, ViewProgress {
       crossSectionsItem.addActionListener(e -> openCrossSectionsFromPolyline(finalPolyline));
       popupMenu.add(crossSectionsItem);
     }
+
+    addVesselPathMenuItems(popupMenu, imageCoords);
+  }
+
+  /** Menu items to build the 3D vessel path, from any MPR plane. */
+  private void addVesselPathMenuItems(JPopupMenu popupMenu, Point2D imageCoords) {
+    MprContainer container =
+        (MprContainer) SwingUtilities.getAncestorOfClass(MprContainer.class, this);
+    if (container == null || imageCoords == null) {
+      return;
+    }
+    VesselPath path = container.getVesselPath();
+    final Vector3d clicked =
+        getScaledVolumeCoordinatesFromImage(imageCoords.getX(), imageCoords.getY());
+    popupMenu.addSeparator();
+    if (clicked != null) {
+      JMenuItem add = new JMenuItem(Messages.getString("vessel.path.add"));
+      add.addActionListener(
+          e -> {
+            path.addPoint(clicked);
+            mprController.getAxesControl().refreshAllCanvases();
+          });
+      popupMenu.add(add);
+    }
+    if (path.size() > 0) {
+      JMenuItem undo = new JMenuItem(Messages.getString("vessel.path.undo"));
+      undo.addActionListener(
+          e -> {
+            path.removeLast();
+            mprController.getAxesControl().refreshAllCanvases();
+          });
+      popupMenu.add(undo);
+      JMenuItem clear = new JMenuItem(Messages.getString("vessel.path.clear"));
+      clear.addActionListener(
+          e -> {
+            path.clear();
+            mprController.getAxesControl().refreshAllCanvases();
+          });
+      popupMenu.add(clear);
+    }
+    if (path.size() >= 2) {
+      JMenuItem open = new JMenuItem(Messages.getString("vessel.path.open"));
+      open.addActionListener(e -> openVesselCprFromPath(container, false));
+      popupMenu.add(open);
+      JMenuItem openAuto = new JMenuItem(Messages.getString("vessel.path.open.auto"));
+      openAuto.addActionListener(e -> openVesselCprFromPath(container, true));
+      popupMenu.add(openAuto);
+    }
+  }
+
+  /**
+   * Open the vessel curved MPR from the 3D vessel path. With {@code autoTrace} the points are only
+   * seeds: the centerline between them is traced in the lumen (in the background); otherwise the
+   * points are joined as clicked.
+   */
+  private void openVesselCprFromPath(MprContainer container, boolean autoTrace) {
+    final List<Vector3d> points = container.getVesselPath().getPoints();
+    if (points.size() < 2) {
+      return;
+    }
+    if (!autoTrace) {
+      container.openVesselCpr(this, points);
+      return;
+    }
+    if (mprController == null || mprController.getVolume() == null) {
+      return;
+    }
+    final Volume<?, ?> volume = mprController.getVolume();
+    new SwingWorker<List<Vector3d>, Void>() {
+      @Override
+      protected List<Vector3d> doInBackground() {
+        return VesselCenterline.trace(volume, points).orElse(null);
+      }
+
+      @Override
+      protected void done() {
+        try {
+          List<Vector3d> centerline = get();
+          if (centerline == null || centerline.size() < 2) {
+            JOptionPane.showMessageDialog(
+                MprView.this,
+                Messages.getString("auto.centerline.failed"),
+                Messages.getString("vessel.path.open.auto"),
+                JOptionPane.WARNING_MESSAGE);
+          } else {
+            container.openVesselCpr(MprView.this, centerline);
+          }
+        } catch (InterruptedException ex) {
+          Thread.currentThread().interrupt();
+        } catch (Exception ex) {
+          LOGGER.error("Vessel centerline failed", ex);
+        }
+      }
+    }.execute();
+  }
+
+  /**
+   * Draw the 3D vessel path on this plane: the clicked points (filled when the point lies on the
+   * displayed slice, hollow otherwise), the vessel curve once the curved MPR is open, and the
+   * green marker at the position selected along the vessel.
+   */
+  private void drawVesselPath(Graphics2D g2d) {
+    MprAxis axis = getMprAxis();
+    MprContainer container =
+        (MprContainer) SwingUtilities.getAncestorOfClass(MprContainer.class, this);
+    if (axis == null || container == null || axis.getTransformation() == null) {
+      return;
+    }
+    List<Vector3d> points = container.getVesselPath().getPoints();
+    CurvedMprView curvedView = container.getCurvedMprView();
+    CurvedMprAxis curvedAxis = curvedView == null ? null : curvedView.getCurvedMprAxis();
+    List<Vector3d> curve = curvedAxis == null ? List.of() : curvedAxis.getSampledPoints();
+    Vector3d cursor = curvedAxis == null ? null : curvedAxis.getCursorPoint();
+    if (points.isEmpty() && curve.isEmpty() && cursor == null) {
+      return;
+    }
+
+    Matrix4d inverse = new Matrix4d(axis.getTransformation()).invert();
+    Color oldColor = g2d.getColor();
+    java.awt.Stroke oldStroke = g2d.getStroke();
+
+    if (curve.size() > 1) {
+      g2d.setColor(new Color(0, 220, 0, 170));
+      g2d.setStroke(new java.awt.BasicStroke(1.5f));
+      java.awt.Point prev = null;
+      int step = Math.max(1, curve.size() / 400);
+      for (int i = 0; i < curve.size(); i += step) {
+        Vector3d q = inverse.transformPosition(new Vector3d(curve.get(i)));
+        java.awt.Point pt = getMouseCoordinatesFromImage(q.x, q.y);
+        if (prev != null) {
+          g2d.drawLine(prev.x, prev.y, pt.x, pt.y);
+        }
+        prev = pt;
+      }
+    }
+
+    g2d.setStroke(new java.awt.BasicStroke(2f));
+    final double onSliceTolerance = 2.0;
+    int r = 4;
+    for (Vector3d p : points) {
+      Vector3d q = inverse.transformPosition(new Vector3d(p));
+      java.awt.Point pt = getMouseCoordinatesFromImage(q.x, q.y);
+      g2d.setColor(Color.RED);
+      if (Math.abs(q.z) <= onSliceTolerance) {
+        g2d.fillOval(pt.x - r, pt.y - r, 2 * r, 2 * r);
+      } else {
+        g2d.drawOval(pt.x - r, pt.y - r, 2 * r, 2 * r);
+      }
+    }
+
+    if (cursor != null) {
+      Vector3d q = inverse.transformPosition(new Vector3d(cursor));
+      java.awt.Point pt = getMouseCoordinatesFromImage(q.x, q.y);
+      int cr = 6;
+      g2d.setColor(Color.GREEN);
+      if (Math.abs(q.z) <= onSliceTolerance) {
+        g2d.fillOval(pt.x - cr, pt.y - cr, 2 * cr, 2 * cr);
+      } else {
+        g2d.drawOval(pt.x - cr, pt.y - cr, 2 * cr, 2 * cr);
+      }
+    }
+    g2d.setColor(oldColor);
+    g2d.setStroke(oldStroke);
   }
 
   private void openCurvedMprFromPolyline(PolylineGraphic polyline) {
@@ -667,6 +831,7 @@ public class MprView extends View2d implements SliceCanvas, ViewProgress {
     }
 
     super.drawOnTop(g2d);
+    drawVesselPath(g2d);
 
     if (CurvedMprAxis.DEBUG_DRAW && plane == Plane.AXIAL) {
       MprContainer container =

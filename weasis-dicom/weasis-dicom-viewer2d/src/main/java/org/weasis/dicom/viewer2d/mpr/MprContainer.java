@@ -84,6 +84,7 @@ import org.weasis.dicom.viewer2d.mpr.MprView.Plane;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CrossSectionParams;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprBuilder;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprView;
+import org.weasis.dicom.viewer2d.mpr.cmpr.VesselPath;
 
 public class MprContainer extends DicomViewerPlugin
     implements PropertyChangeListener, VolumeProvider {
@@ -177,6 +178,7 @@ public class MprContainer extends DicomViewerPlugin
   public static final SeriesViewerUI UI =
       new SeriesViewerUI(MprContainer.class, null, View2dContainer.UI.tools, null);
   private MprController mprController;
+  private final VesselPath vesselPath = new VesselPath();
 
   private Thread process;
   private FusionState inheritedFusion;
@@ -493,6 +495,37 @@ public class MprContainer extends DicomViewerPlugin
         .ifPresent(
             axis -> {
               axis.bindPolyline(sourceView, polyline);
+              GuiExecutor.execute(
+                  () -> {
+                    if (!mprWithCurved.equals(cellManager.getLayoutModel())) {
+                      setLayoutModel(mprWithCurved);
+                    }
+                    CurvedMprView curvedView = getCurvedMprView();
+                    if (curvedView != null) {
+                      curvedView.setCurvedMprAxis(axis);
+                    } else {
+                      LOGGER.warn("Curved MPR layout does not expose a CurvedMprView cell");
+                    }
+                  });
+            });
+  }
+
+  /** The 3D vessel path clicked by the user, shared by the three MPR planes. */
+  public VesselPath getVesselPath() {
+    return vesselPath;
+  }
+
+  /**
+   * Open a vessel curved MPR from a 3D path (voxel-ratio-scaled coordinates): the rows of the
+   * panoramic are offset perpendicular to the vessel (rotatable around it), with the anteroposterior
+   * direction as reference. The position marker starts at the first point of the vessel.
+   */
+  public void openVesselCpr(MprView sourceView, List<Vector3d> pathPoints) {
+    CurvedMprBuilder.buildAxis(sourceView, pathPoints, new Vector3d(0, 1, 0))
+        .ifPresent(
+            axis -> {
+              axis.setVesselMode(true);
+              axis.setCursorColumn(0);
               GuiExecutor.execute(
                   () -> {
                     if (!mprWithCurved.equals(cellManager.getLayoutModel())) {

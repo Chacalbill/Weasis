@@ -151,6 +151,7 @@ public class CurvedMprImageIO implements DcmMediaReader {
       lengthVoxels += smoothedPoints.get(i).distance(smoothedPoints.get(i - 1));
     }
     axis.setCenterlineLengthMm(lengthVoxels * pixelMm);
+    axis.setSampledPoints(sampledPoints);
 
     if (CurvedMprAxis.DEBUG_DRAW) {
       axis.setDebugData(
@@ -161,6 +162,10 @@ public class CurvedMprImageIO implements DcmMediaReader {
     LOGGER.info("Output: {}x{} px, height={}mm", widthPx, heightPx, sliceSizeMm);
 
     Vector3d normal = axis.getPlaneNormal();
+    final List<Vector3d> rowDirs =
+        axis.isVesselMode()
+            ? CurveSampler.rowDirections(sampledPoints, normal, axis.getAngleDeg())
+            : null;
 
     // Diagnostic logging
     int midI = widthPx / 2;
@@ -188,10 +193,11 @@ public class CurvedMprImageIO implements DcmMediaReader {
             (column, row, voxel) -> {
               Vector3d curvePoint = sampledPoints.get(column);
               double offset = row - rows / 2.0;
+              Vector3d dir = rowDirs == null ? normal : rowDirs.get(column);
               voxel.set(
-                  (curvePoint.x + normal.x * offset) / voxelRatio.x,
-                  (curvePoint.y + normal.y * offset) / voxelRatio.y,
-                  (curvePoint.z + normal.z * offset) / voxelRatio.z);
+                  (curvePoint.x + dir.x * offset) / voxelRatio.x,
+                  (curvePoint.y + dir.y * offset) / voxelRatio.y,
+                  (curvePoint.z + dir.z * offset) / voxelRatio.z);
             });
 
     LOGGER.info("Generated CPR panoramic image");

@@ -23,7 +23,10 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JPopupMenu;
 import javax.swing.JSlider;
+import javax.swing.SwingUtilities;
 import net.miginfocom.swing.MigLayout;
+import org.joml.Vector3d;
+import org.joml.Vector3i;
 import org.weasis.core.api.gui.util.GuiUtils;
 import org.weasis.core.api.image.util.Unit;
 import org.weasis.core.api.util.ResourceUtil;
@@ -33,6 +36,7 @@ import org.weasis.core.ui.editor.image.ViewButton;
 import org.weasis.dicom.codec.DicomImageElement;
 import org.weasis.dicom.codec.DicomSeries;
 import org.weasis.dicom.viewer2d.View2d;
+import org.weasis.dicom.viewer2d.mpr.MprContainer;
 
 /**
  * 2D view displaying a curved-MPR panoramic image inside a regular {@code MprContainer}.
@@ -109,6 +113,53 @@ public class CurvedMprView extends View2d {
     g2d.drawString(text, x, y);
     g2d.setFont(oldFont);
     g2d.setColor(oldColor);
+    drawCursor(g2d, axis);
+  }
+
+  /** Yellow vertical line at the position marker (the green dot of the three MPR planes). */
+  private void drawCursor(Graphics2D g2d, CurvedMprAxis axis) {
+    int column = axis.getCursorColumn();
+    if (column < 0 || column >= axis.getSampledPoints().size()) {
+      return;
+    }
+    double pixelMm = sanitizePixelMm(axis.getVolume().getMinPixelRatio());
+    double rows = Math.max(1, Math.round(axis.getWidthMm() / pixelMm));
+    java.awt.Point top = getMouseCoordinatesFromImage(column + 0.5, 0);
+    java.awt.Point bottom = getMouseCoordinatesFromImage(column + 0.5, rows);
+    java.awt.Stroke oldStroke = g2d.getStroke();
+    Color oldColor = g2d.getColor();
+    g2d.setStroke(new java.awt.BasicStroke(1.5f));
+    g2d.setColor(Color.YELLOW);
+    g2d.drawLine(top.x, top.y, bottom.x, bottom.y);
+    g2d.setStroke(oldStroke);
+    g2d.setColor(oldColor);
+  }
+
+  /**
+   * Move the position marker to a panoramic column: the yellow line follows it and the crosshair of
+   * the three MPR planes is moved to the same point of the vessel (so the planes show it).
+   */
+  public void moveCursorToColumn(int column) {
+    CurvedMprAxis axis = curvedMprAxis;
+    if (axis == null || axis.getSampledPoints().isEmpty()) {
+      return;
+    }
+    axis.setCursorColumn(Math.clamp(column, 0, axis.getSampledPoints().size() - 1));
+    Vector3d point = axis.getCursorPoint();
+    MprContainer container =
+        (MprContainer) SwingUtilities.getAncestorOfClass(MprContainer.class, this);
+    if (point != null && container != null && container.getMprController() != null) {
+      Vector3d ratio = axis.getVolume().getVoxelRatio();
+      Vector3i size = axis.getVolume().getSize();
+      container
+          .getMprController()
+          .setCrossHairAtVoxel(
+              new Vector3i(
+                  Math.clamp(Math.round(point.x / ratio.x), 0, size.x - 1),
+                  Math.clamp(Math.round(point.y / ratio.y), 0, size.y - 1),
+                  Math.clamp(Math.round(point.z / ratio.z), 0, size.z - 1)));
+    }
+    repaint();
   }
 
   @Override
@@ -158,11 +209,15 @@ public class CurvedMprView extends View2d {
     JPanel panel =
         new JPanel(
             new MigLayout(
-                "fillx, ins 6lp, wrap 1", "[grow, fill]", "[]2lp[]8lp[]2lp[]8lp[]")); // NON-NLS
+                "fillx, ins 6lp, wrap 1", "[grow, fill]", "[]2lp[]8lp[]2lp[]8lp[]2lp[]8lp[]2lp[]8lp[]")); // NON-NLS
 
     List<Runnable> resetActions = new ArrayList<>(2);
     addHeightSlider(panel, pixelMm, unitLabel, resetActions);
     addStepSlider(panel, pixelMm, unitLabel, resetActions);
+    addPositionSlider(panel);
+    if (curvedMprAxis.isVesselMode()) {
+      addAngleSlider(panel, resetActions);
+    }
 
     JButton reset = new JButton("Reset to defaults"); // NON-NLS
     reset.addActionListener(e -> resetActions.forEach(Runnable::run));
@@ -171,6 +226,47 @@ public class CurvedMprView extends View2d {
     JPopupMenu popup = new JPopupMenu();
     popup.add(panel);
     popup.show(invoker, x, y);
+  }
+
+  /** Slider that moves the position marker along the vessel (and the crosshair of the planes). */
+  private void addPositionSlider(JPanel panel) {
+    int count = curvedMprAxis.getSampledPoints().size();
+    if (count < 2) {
+      return;
+    }
+    double lengthMm = curvedMprAxis.getCenterlineLengthMm();
+    JSlider slider =
+        GuiUtils.createSlider(0, count - 1, Math.max(0, curvedMprAxis.getCursorColumn()), 4);
+    JLabel label = new JLabel(positionText(slider.getValue(), count, lengthMm));
+    slider.addChangeListener(
+        e -> {
+          label.setText(positionText(slider.getValue(), count, lengthMm));
+          moveCursorToColumn(slider.getValue());
+        });
+    panel.add(label);
+    panel.add(slider, "growx, w 260lp"); // NON-NLS
+  }
+
+  private static String positionText(int column, int count, double lengthMm) {
+    double mm = count > 1 ? lengthMm * column / (count - 1.0) : 0;
+    return "Position: %.2f cm".formatted(mm / 10.0); // NON-NLS
+  }
+
+  /** Slider that rotates the panoramic plane around the vessel (0-360 degrees). */
+  private void addAngleSlider(JPanel panel, List<Runnable> resetActions) {
+    int current = (int) Math.round(curvedMprAxis.getAngleDeg()) % 360;
+    JSlider slider = GuiUtils.createSlider(0, 359, current, 4);
+    JLabel label = new JLabel("Angle: %d°".formatted(current)); // NON-NLS
+    slider.addChangeListener(
+        e -> {
+          label.setText("Angle: %d°".formatted(slider.getValue())); // NON-NLS
+          if (!slider.getValueIsAdjusting()) {
+            curvedMprAxis.setAngleDeg(slider.getValue());
+          }
+        });
+    panel.add(label);
+    panel.add(slider, "growx, w 260lp"); // NON-NLS
+    resetActions.add(() -> slider.setValue(0));
   }
 
   /**

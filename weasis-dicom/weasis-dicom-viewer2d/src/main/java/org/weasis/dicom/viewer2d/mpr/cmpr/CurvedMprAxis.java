@@ -87,6 +87,21 @@ public class CurvedMprAxis {
   /** Length (mm) of the smoothed curve, refreshed every time the panoramic image is generated. */
   private volatile double centerlineLengthMm;
 
+  /**
+   * Vessel mode: each row of the panoramic is offset along a direction perpendicular to the curve
+   * (the reference direction rotated around the curve by {@link #angleDeg}), instead of along one
+   * fixed normal. Used for 3D vessel paths.
+   */
+  private volatile boolean vesselMode;
+
+  private volatile double angleDeg;
+
+  /** Curve samples (voxel-ratio-scaled space), one per panoramic column; set when generated. */
+  private volatile List<Vector3d> sampledPoints = List.of();
+
+  /** Panoramic column of the position marker (green dot / yellow line), or -1 when unset. */
+  private volatile int cursorColumn = -1;
+
   // Live-edit binding to the source polyline. Optional.
   private MprView sourceView;
   private PolylineGraphic sourcePolyline;
@@ -190,6 +205,55 @@ public class CurvedMprAxis {
 
   public void setCenterlineLengthMm(double centerlineLengthMm) {
     this.centerlineLengthMm = centerlineLengthMm;
+  }
+
+  public boolean isVesselMode() {
+    return vesselMode;
+  }
+
+  public void setVesselMode(boolean vesselMode) {
+    this.vesselMode = vesselMode;
+  }
+
+  public double getAngleDeg() {
+    return angleDeg;
+  }
+
+  /** Rotation (degrees, 0-360) of the panoramic plane around the vessel; regenerates the image. */
+  public void setAngleDeg(double angleDeg) {
+    if (this.angleDeg != angleDeg) {
+      this.angleDeg = angleDeg;
+      updateImage();
+    }
+  }
+
+  public List<Vector3d> getSampledPoints() {
+    return sampledPoints;
+  }
+
+  public void setSampledPoints(List<Vector3d> sampledPoints) {
+    this.sampledPoints = sampledPoints == null ? List.of() : List.copyOf(sampledPoints);
+    if (cursorColumn >= this.sampledPoints.size()) {
+      cursorColumn = this.sampledPoints.size() - 1;
+    }
+  }
+
+  public int getCursorColumn() {
+    return cursorColumn;
+  }
+
+  public void setCursorColumn(int cursorColumn) {
+    this.cursorColumn = cursorColumn;
+  }
+
+  /** The 3D position of the marker (voxel-ratio-scaled space), or {@code null} when unset. */
+  public Vector3d getCursorPoint() {
+    List<Vector3d> samples = sampledPoints;
+    int column = cursorColumn;
+    if (column < 0 || column >= samples.size()) {
+      return null;
+    }
+    return new Vector3d(samples.get(column));
   }
 
   public void setDebugData(DebugCurveData debugData) {

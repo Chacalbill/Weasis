@@ -115,6 +115,62 @@ public final class CurveSampler {
   }
 
   /**
+   * Direction of the panoramic rows at each sample for a 3D vessel path: the reference direction
+   * made perpendicular to the curve tangent, kept continuous along the curve, then rotated around
+   * the tangent by {@code angleDeg}. With a path that runs along the reference direction the
+   * previous row direction is kept.
+   */
+  static List<Vector3d> rowDirections(
+      List<Vector3d> sampledPoints, Vector3d reference, double angleDeg) {
+    int n = sampledPoints.size();
+    List<Vector3d> result = new ArrayList<>(n);
+    Vector3d ref = new Vector3d(reference);
+    if (ref.lengthSquared() < 1e-12) {
+      ref.set(0, 1, 0);
+    }
+    ref.normalize();
+    double angle = Math.toRadians(angleDeg);
+    double cos = Math.cos(angle);
+    double sin = Math.sin(angle);
+    Vector3d prevRow = null;
+    Vector3d prevTangent = new Vector3d(0, 0, 1);
+    for (int i = 0; i < n; i++) {
+      Vector3d next = sampledPoints.get(Math.min(i + 1, n - 1));
+      Vector3d prev = sampledPoints.get(Math.max(i - 1, 0));
+      Vector3d tangent = new Vector3d(next).sub(prev);
+      if (tangent.lengthSquared() < 1e-12) {
+        tangent.set(prevTangent);
+      } else {
+        tangent.normalize();
+      }
+      prevTangent = tangent;
+
+      Vector3d row = new Vector3d(ref).fma(-ref.dot(tangent), tangent);
+      if (row.lengthSquared() < 1e-6) {
+        if (prevRow != null) {
+          row.set(prevRow).fma(-prevRow.dot(tangent), tangent);
+        }
+        if (row.lengthSquared() < 1e-6) {
+          row.set(1, 0, 0).fma(-tangent.x, tangent);
+          if (row.lengthSquared() < 1e-6) {
+            row.set(0, 1, 0).fma(-tangent.y, tangent);
+          }
+        }
+      }
+      row.normalize();
+      if (prevRow != null && row.dot(prevRow) < 0) {
+        row.negate();
+      }
+      prevRow = new Vector3d(row);
+
+      Vector3d cross = new Vector3d(tangent).cross(row);
+      Vector3d rotated = new Vector3d(row).mul(cos).fma(sin, cross);
+      result.add(rotated.normalize());
+    }
+    return result;
+  }
+
+  /**
    * Compute the in-plane perpendicular direction to the curve tangent at each sample. The
    * perpendicular is computed in the plane defined by {@code planeNormal} (typically XY plane,
    * normal = Z). Perpendiculars are kept consistent along the curve (no sudden flips), and all are
