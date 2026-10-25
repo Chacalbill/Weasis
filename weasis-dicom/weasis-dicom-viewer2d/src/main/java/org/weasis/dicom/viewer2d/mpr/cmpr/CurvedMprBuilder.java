@@ -104,7 +104,28 @@ public final class CurvedMprBuilder {
     if (sourceView == null || polyline == null) {
       return Optional.empty();
     }
-    List<Vector3d> curvePoints3D = extractCurvePoints(sourceView, polyline);
+    return buildAxis(sourceView, extractCurvePoints(sourceView, polyline));
+  }
+
+  /**
+   * Same as {@link #buildAxis(MprView, PolylineGraphic)} but from curve points already expressed in
+   * voxel-ratio-scaled coordinates, for example an automatically traced vessel centerline.
+   */
+  public static Optional<CurvedMprAxis> buildAxis(
+      MprView sourceView, List<Vector3d> curvePoints3D) {
+    return buildAxis(sourceView, curvePoints3D, null);
+  }
+
+  /**
+   * Same as {@link #buildAxis(MprView, List)} with an explicit reference direction (in
+   * voxel-ratio-scaled space) instead of the normal of the source view; {@code null} keeps the
+   * normal of the source view.
+   */
+  public static Optional<CurvedMprAxis> buildAxis(
+      MprView sourceView, List<Vector3d> curvePoints3D, Vector3d referenceDirection) {
+    if (sourceView == null || curvePoints3D == null) {
+      return Optional.empty();
+    }
     if (curvePoints3D.size() < 2) {
       LOGGER.warn("Cannot open curved MPR: fewer than 2 valid curve points");
       return Optional.empty();
@@ -115,7 +136,8 @@ public final class CurvedMprBuilder {
       return Optional.empty();
     }
 
-    Vector3d planeNormal = effectivePlaneNormal(sourceView);
+    Vector3d planeNormal =
+        referenceDirection == null ? effectivePlaneNormal(sourceView) : referenceDirection;
     CurvedMprAxis axis = new CurvedMprAxis(controller.getVolume(), curvePoints3D, planeNormal);
     CurvedMprImageIO io = new CurvedMprImageIO(axis);
     axis.setIo(io);

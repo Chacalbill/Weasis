@@ -29,7 +29,22 @@ final class VolumeSampler {
 
   /** Pixels that fall outside the volume take its background value. */
   static ImageCV sample(Volume<?, ?> volume, int width, int height, PixelLocator locator) {
-    Object pixels = samplePixels(volume, width, height, locator);
+    return sample(volume, width, height, locator, 1, null);
+  }
+
+  /**
+   * Same as {@link #sample(Volume, int, int, PixelLocator)} with a maximum-intensity slab: each
+   * pixel is the maximum of {@code slabSamples} samples centred on the located voxel and spaced by
+   * {@code slabStepVoxels} (voxel index units). With one sample (or no step) it is a thin sample.
+   */
+  static ImageCV sample(
+      Volume<?, ?> volume,
+      int width,
+      int height,
+      PixelLocator locator,
+      int slabSamples,
+      Vector3d slabStepVoxels) {
+    Object pixels = samplePixels(volume, width, height, locator, slabSamples, slabStepVoxels);
     var image = new ImageCV(height, width, volume.getCvType());
     switch (pixels) {
       case byte[] data -> image.put(0, 0, data);
@@ -44,37 +59,47 @@ final class VolumeSampler {
 
   /** Returns the primitive array of the volume type, rows computed in parallel. */
   static Object samplePixels(Volume<?, ?> volume, int width, int height, PixelLocator locator) {
+    return samplePixels(volume, width, height, locator, 1, null);
+  }
+
+  static Object samplePixels(
+      Volume<?, ?> volume,
+      int width,
+      int height,
+      PixelLocator locator,
+      int slabSamples,
+      Vector3d slabStepVoxels) {
     Number background = volume.getPhotometricMinValue();
     int size = width * height;
     return switch (CvType.depth(volume.getCvType())) {
       case CvType.CV_8U, CvType.CV_8S -> {
         byte[] data = new byte[size];
         Arrays.fill(data, background.byteValue());
-        fill(volume, width, height, locator, (i, v) -> data[i] = v.byteValue());
+        fill(volume, width, height, locator, slabSamples, slabStepVoxels, (i, v) -> data[i] = v.byteValue());
         yield data;
       }
       case CvType.CV_16U, CvType.CV_16S -> {
         short[] data = new short[size];
         Arrays.fill(data, background.shortValue());
-        fill(volume, width, height, locator, (i, v) -> data[i] = v.shortValue());
+        fill(volume, width, height, locator, slabSamples, slabStepVoxels, (i, v) -> data[i] = v.shortValue());
         yield data;
       }
       case CvType.CV_32S -> {
         int[] data = new int[size];
         Arrays.fill(data, background.intValue());
-        fill(volume, width, height, locator, (i, v) -> data[i] = v.intValue());
+        fill(volume, width, height, locator, slabSamples, slabStepVoxels, (i, v) -> data[i] = v.intValue());
         yield data;
       }
       case CvType.CV_32F -> {
         float[] data = new float[size];
         Arrays.fill(data, background.floatValue());
-        fill(volume, width, height, locator, (i, v) -> data[i] = v.floatValue());
+        fill(volume, width, height, locator, slabSamples, slabStepVoxels, (i, v) -> data[i] = v.floatValue());
         yield data;
       }
       default -> {
         double[] data = new double[size];
         Arrays.fill(data, background.doubleValue());
-        fill(volume, width, height, locator, (i, v) -> data[i] = v.doubleValue());
+        fill(volume, width, height, locator, slabSamples, slabStepVoxels, (i, v) -> data[i] = v.doubleValue());
         yield data;
       }
     };
@@ -86,7 +111,14 @@ final class VolumeSampler {
   }
 
   private static void fill(
-      Volume<?, ?> volume, int width, int height, PixelLocator locator, PixelWriter writer) {
+      Volume<?, ?> volume,
+      int width,
+      int height,
+      PixelLocator locator,
+      int slabSamples,
+      Vector3d slabStepVoxels,
+      PixelWriter writer) {
+    final boolean slab = slabSamples > 1 && slabStepVoxels != null;
     IntStream.range(0, height)
         .parallel()
         .forEach(
@@ -94,11 +126,38 @@ final class VolumeSampler {
               var voxel = new Vector3d();
               for (int column = 0; column < width; column++) {
                 locator.locate(column, row, voxel);
-                Number value = volume.getInterpolatedValueFromSource(voxel.x, voxel.y, voxel.z, 0);
+                Number value;
+                if (slab) {
+                  value = maxAlongSlab(volume, voxel, slabSamples, slabStepVoxels);
+                } else {
+                  value = volume.getInterpolatedValueFromSource(voxel.x, voxel.y, voxel.z, 0);
+                }
                 if (value != null) {
                   writer.set(row * width + column, value);
                 }
               }
             });
+  }
+
+  /** Maximum of the samples centred on {@code center}, or {@code null} when all are outside. */
+  private static Number maxAlongSlab(
+      Volume<?, ?> volume, Vector3d center, int samples, Vector3d stepVoxels) {
+    double max = Double.NEGATIVE_INFINITY;
+    boolean found = false;
+    double half = (samples - 1) / 2.0;
+    for (int k = 0; k < samples; k++) {
+      double offset = k - half;
+      double v =
+          volume.getInterpolatedDouble(
+              center.x + stepVoxels.x * offset,
+              center.y + stepVoxels.y * offset,
+              center.z + stepVoxels.z * offset,
+              0);
+      if (!Double.isNaN(v) && v > max) {
+        max = v;
+        found = true;
+      }
+    }
+    return found ? Double.valueOf(max) : null;
   }
 }

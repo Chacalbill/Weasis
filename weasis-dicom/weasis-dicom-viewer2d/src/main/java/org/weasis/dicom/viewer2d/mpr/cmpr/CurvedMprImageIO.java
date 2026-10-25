@@ -145,6 +145,19 @@ public class CurvedMprImageIO implements DcmMediaReader {
 
     int widthPx = sampledPoints.size();
 
+    // Length along the smoothed curve: points are in voxel-ratio-scaled space (1 unit = pixelMm)
+    double lengthVoxels = 0;
+    for (int i = 1; i < smoothedPoints.size(); i++) {
+      lengthVoxels += smoothedPoints.get(i).distance(smoothedPoints.get(i - 1));
+    }
+    axis.setCenterlineLengthMm(lengthVoxels * pixelMm);
+    axis.setSampledPoints(sampledPoints);
+
+    if (axis.getReformationType() == CurvedMprAxis.ReformationType.STRETCHED) {
+      return generateStretchedImage(sampledPoints, pixelMm, voxelRatio);
+    }
+    axis.setStretchedFrame(null);
+
     if (CurvedMprAxis.DEBUG_DRAW) {
       axis.setDebugData(
           new CurvedMprAxis.DebugCurveData(
@@ -154,6 +167,10 @@ public class CurvedMprImageIO implements DcmMediaReader {
     LOGGER.info("Output: {}x{} px, height={}mm", widthPx, heightPx, sliceSizeMm);
 
     Vector3d normal = axis.getPlaneNormal();
+    final List<Vector3d> rowDirs =
+        axis.isVesselMode()
+            ? CurveSampler.rowDirections(sampledPoints, normal, axis.getAngleDeg())
+            : null;
 
     // Diagnostic logging
     int midI = widthPx / 2;
@@ -181,34 +198,126 @@ public class CurvedMprImageIO implements DcmMediaReader {
             (column, row, voxel) -> {
               Vector3d curvePoint = sampledPoints.get(column);
               double offset = row - rows / 2.0;
+              Vector3d dir = rowDirs == null ? normal : rowDirs.get(column);
               voxel.set(
-                  (curvePoint.x + normal.x * offset) / voxelRatio.x,
-                  (curvePoint.y + normal.y * offset) / voxelRatio.y,
-                  (curvePoint.z + normal.z * offset) / voxelRatio.z);
+                  (curvePoint.x + dir.x * offset) / voxelRatio.x,
+                  (curvePoint.y + dir.y * offset) / voxelRatio.y,
+                  (curvePoint.z + dir.z * offset) / voxelRatio.z);
             });
 
     LOGGER.info("Generated CPR panoramic image");
 
-    setDicomTags(widthPx, heightPx);
+    setDicomTags(widthPx, heightPx, stepMm, pixelMm);
     return dst;
   }
 
   /**
-   * Refresh the per-image identity tags. PixelSpacing is intentionally <em>not</em> written: the X
-   * axis of the panoramic represents arc-length along the curve (uniform in mm-along-arc, but
-   * <em>not</em> Euclidean distance between distant points), so calibrated mm measurements would be
-   * misleading. Leaving PixelSpacing absent forces measurements to report in pixels, which is an
-   * honest unit for this image.
+   * Stretched reformation: a maximum-intensity slab of the volume seen along a viewing direction
+   * (the coronal one by default, rotated around the vertical axis by the angle), cropped around the
+   * vessel path. The vessel keeps its natural shape; the path and the A/B/C marks are drawn on top
+   * using {@link CurvedMprAxis.StretchedFrame}. Pixels are square, so in-plane distances are real
+   * (projected) distances; the vessel length is the "Vessel length" label.
+   */
+  private PlanarImage generateStretchedImage(
+      List<Vector3d> points, double pixelMm, Vector3d voxelRatio) {
+    CurvedMprAxis.ViewBasis base = axis.getViewBasis();
+    Vector3d right = base == null ? new Vector3d(1, 0, 0) : new Vector3d(base.right());
+    Vector3d down = base == null ? new Vector3d(0, 0, 1) : new Vector3d(base.down());
+    Vector3d normal = base == null ? new Vector3d(0, 1, 0) : new Vector3d(base.normal());
+
+    // Rotate the viewing direction around the vertical (down) axis
+    double angle = Math.toRadians(axis.getAngleDeg());
+    double cos = Math.cos(angle);
+    double sin = Math.sin(angle);
+    Vector3d rightR =
+        new Vector3d(right).mul(cos).fma(sin, new Vector3d(down).cross(right)).normalize();
+    Vector3d normalR =
+        new Vector3d(normal).mul(cos).fma(sin, new Vector3d(down).cross(normal)).normalize();
+
+    // Extent of the path on the image plane, plus a margin
+    double minX = Double.MAX_VALUE;
+    double maxX = -Double.MAX_VALUE;
+    double minY = Double.MAX_VALUE;
+    double maxY = -Double.MAX_VALUE;
+    double sumN = 0;
+    for (Vector3d point : points) {
+      double x = point.dot(rightR);
+      double y = point.dot(down);
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+      sumN += point.dot(normalR);
+    }
+    double marginUnits = Math.max(20.0, axis.getWidthMm() / 2.0) / pixelMm;
+    double extentX = Math.max(1.0, maxX - minX) + 2 * marginUnits;
+    double extentY = Math.max(1.0, maxY - minY) + 2 * marginUnits;
+    final double unitsPerPixel = Math.max(1.0, Math.max(extentX, extentY) / 2400.0);
+    final int widthPx = Math.max(2, (int) Math.ceil(extentX / unitsPerPixel));
+    final int heightPx = Math.max(2, (int) Math.ceil(extentY / unitsPerPixel));
+    final Vector3d center =
+        new Vector3d(rightR)
+            .mul((minX + maxX) / 2.0)
+            .fma((minY + maxY) / 2.0, down)
+            .fma(sumN / points.size(), normalR);
+
+    double mmPerPixel = unitsPerPixel * pixelMm;
+    int slabSamples = Math.max(1, (int) Math.round(axis.getSlabMm() / mmPerPixel));
+    Vector3d slabStep =
+        new Vector3d(
+            normalR.x * unitsPerPixel / voxelRatio.x,
+            normalR.y * unitsPerPixel / voxelRatio.y,
+            normalR.z * unitsPerPixel / voxelRatio.z);
+
+    ImageCV dst =
+        VolumeSampler.sample(
+            volume,
+            widthPx,
+            heightPx,
+            (column, row, voxel) -> {
+              double dx = (column - widthPx / 2.0) * unitsPerPixel;
+              double dy = (row - heightPx / 2.0) * unitsPerPixel;
+              voxel.set(
+                  (center.x + rightR.x * dx + down.x * dy) / voxelRatio.x,
+                  (center.y + rightR.y * dx + down.y * dy) / voxelRatio.y,
+                  (center.z + rightR.z * dx + down.z * dy) / voxelRatio.z);
+            },
+            slabSamples,
+            slabStep);
+
+    axis.setStretchedFrame(
+        new CurvedMprAxis.StretchedFrame(
+            center,
+            new CurvedMprAxis.ViewBasis(rightR, new Vector3d(down), normalR),
+            widthPx,
+            heightPx,
+            unitsPerPixel));
+    setDicomTags(widthPx, heightPx, mmPerPixel, mmPerPixel);
+    return dst;
+  }
+
+  /**
+   * Refresh the per-image identity tags. PixelSpacing is written only when the sampling step equals
+   * the output row spacing (square pixels, the default): then a horizontal measurement follows the
+   * vessel path (X is arc length) and a vertical one is a true perpendicular distance, so the
+   * standard length tools report calibrated values. Oblique measurements are not reliable on a
+   * straightened image. With a custom step the pixels are not square and PixelSpacing is omitted,
+   * so measurements fall back to pixels.
    */
   public void updateIdentityTags() {
     tags.putIfAbsent(TagD.get(Tag.SOPInstanceUID), UIDUtils.createUID());
     tags.putIfAbsent(TagD.get(Tag.InstanceNumber), 1);
   }
 
-  private void setDicomTags(int widthPx, int heightPx) {
+  private void setDicomTags(int widthPx, int heightPx, double stepMm, double pixelMm) {
     HEADER_CACHE.remove(this);
     tags.put(TagD.get(Tag.Columns), widthPx);
     tags.put(TagD.get(Tag.Rows), heightPx);
+    if (pixelMm > 0 && Math.abs(stepMm - pixelMm) < 1e-6) {
+      tags.put(TagD.get(Tag.PixelSpacing), new double[] {pixelMm, pixelMm});
+    } else {
+      tags.remove(TagD.get(Tag.PixelSpacing));
+    }
     updateIdentityTags();
   }
 
