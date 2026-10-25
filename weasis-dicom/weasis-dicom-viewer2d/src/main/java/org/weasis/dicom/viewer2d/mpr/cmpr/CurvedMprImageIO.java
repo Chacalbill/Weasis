@@ -145,6 +145,13 @@ public class CurvedMprImageIO implements DcmMediaReader {
 
     int widthPx = sampledPoints.size();
 
+    // Length along the smoothed curve: points are in voxel-ratio-scaled space (1 unit = pixelMm)
+    double lengthVoxels = 0;
+    for (int i = 1; i < smoothedPoints.size(); i++) {
+      lengthVoxels += smoothedPoints.get(i).distance(smoothedPoints.get(i - 1));
+    }
+    axis.setCenterlineLengthMm(lengthVoxels * pixelMm);
+
     if (CurvedMprAxis.DEBUG_DRAW) {
       axis.setDebugData(
           new CurvedMprAxis.DebugCurveData(
@@ -189,26 +196,32 @@ public class CurvedMprImageIO implements DcmMediaReader {
 
     LOGGER.info("Generated CPR panoramic image");
 
-    setDicomTags(widthPx, heightPx);
+    setDicomTags(widthPx, heightPx, stepMm, pixelMm);
     return dst;
   }
 
   /**
-   * Refresh the per-image identity tags. PixelSpacing is intentionally <em>not</em> written: the X
-   * axis of the panoramic represents arc-length along the curve (uniform in mm-along-arc, but
-   * <em>not</em> Euclidean distance between distant points), so calibrated mm measurements would be
-   * misleading. Leaving PixelSpacing absent forces measurements to report in pixels, which is an
-   * honest unit for this image.
+   * Refresh the per-image identity tags. PixelSpacing is written only when the sampling step equals
+   * the output row spacing (square pixels, the default): then a horizontal measurement follows the
+   * vessel path (X is arc length) and a vertical one is a true perpendicular distance, so the
+   * standard length tools report calibrated values. Oblique measurements are not reliable on a
+   * straightened image. With a custom step the pixels are not square and PixelSpacing is omitted,
+   * so measurements fall back to pixels.
    */
   public void updateIdentityTags() {
     tags.putIfAbsent(TagD.get(Tag.SOPInstanceUID), UIDUtils.createUID());
     tags.putIfAbsent(TagD.get(Tag.InstanceNumber), 1);
   }
 
-  private void setDicomTags(int widthPx, int heightPx) {
+  private void setDicomTags(int widthPx, int heightPx, double stepMm, double pixelMm) {
     HEADER_CACHE.remove(this);
     tags.put(TagD.get(Tag.Columns), widthPx);
     tags.put(TagD.get(Tag.Rows), heightPx);
+    if (pixelMm > 0 && Math.abs(stepMm - pixelMm) < 1e-6) {
+      tags.put(TagD.get(Tag.PixelSpacing), new double[] {pixelMm, pixelMm});
+    } else {
+      tags.remove(TagD.get(Tag.PixelSpacing));
+    }
     updateIdentityTags();
   }
 

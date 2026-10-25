@@ -84,6 +84,9 @@ public class CurvedMprAxis {
   private CurvedMprView view;
   private volatile DebugCurveData debugData; // NOSONAR guarantees visibility of the reference
 
+  /** Length (mm) of the smoothed curve, refreshed every time the panoramic image is generated. */
+  private volatile double centerlineLengthMm;
+
   // Live-edit binding to the source polyline. Optional.
   private MprView sourceView;
   private PolylineGraphic sourcePolyline;
@@ -175,6 +178,18 @@ public class CurvedMprAxis {
   /** The axial view the polyline was drawn on, or {@code null} if not bound. */
   public MprView getSourceView() {
     return sourceView;
+  }
+
+  /**
+   * Length in mm measured along the smoothed curve (the vessel path), as drawn on the panoramic
+   * image. It is 0 until the panoramic image has been generated.
+   */
+  public double getCenterlineLengthMm() {
+    return centerlineLengthMm;
+  }
+
+  public void setCenterlineLengthMm(double centerlineLengthMm) {
+    this.centerlineLengthMm = centerlineLengthMm;
   }
 
   public void setDebugData(DebugCurveData debugData) {

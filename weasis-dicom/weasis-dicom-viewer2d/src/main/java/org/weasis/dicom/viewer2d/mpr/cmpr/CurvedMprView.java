@@ -9,8 +9,12 @@
  */
 package org.weasis.dicom.viewer2d.mpr.cmpr;
 
+import java.awt.Color;
 import java.awt.Component;
+import java.awt.Font;
+import java.awt.FontMetrics;
 import java.awt.GridBagConstraints;
+import java.awt.Graphics2D;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -78,6 +82,33 @@ public class CurvedMprView extends View2d {
       series.addMedia(img);
       setSeries(series, img);
     }
+  }
+
+  /** Draws the vessel length (along the curve) at the top centre of the view. */
+  @Override
+  protected void drawOnTop(Graphics2D g2d) {
+    super.drawOnTop(g2d);
+    CurvedMprAxis axis = curvedMprAxis;
+    if (axis == null) {
+      return;
+    }
+    double lengthMm = axis.getCenterlineLengthMm();
+    if (lengthMm <= 0) {
+      return;
+    }
+    String text = String.format("Vessel length: %.2f cm", lengthMm / 10.0); // NON-NLS
+    Font oldFont = g2d.getFont();
+    Color oldColor = g2d.getColor();
+    g2d.setFont(oldFont.deriveFont(Font.BOLD, oldFont.getSize2D() + 2f));
+    FontMetrics fm = g2d.getFontMetrics();
+    int x = (getWidth() - fm.stringWidth(text)) / 2;
+    int y = fm.getHeight() + 6;
+    g2d.setColor(Color.BLACK);
+    g2d.drawString(text, x + 1, y + 1);
+    g2d.setColor(Color.YELLOW);
+    g2d.drawString(text, x, y);
+    g2d.setFont(oldFont);
+    g2d.setColor(oldColor);
   }
 
   @Override
