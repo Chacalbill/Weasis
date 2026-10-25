@@ -102,6 +102,38 @@ public class CurvedMprAxis {
   /** Panoramic column of the position marker (green dot / yellow line), or -1 when unset. */
   private volatile int cursorColumn = -1;
 
+  /** How the curved reformation is displayed. */
+  public enum ReformationType {
+    /** The vessel is straightened: X is the arc length, rows are perpendicular to the vessel. */
+    STRAIGHTENED,
+    /** The vessel keeps its natural shape: a thick-slab (MIP) view with the path drawn on it. */
+    STRETCHED
+  }
+
+  /** Orthonormal viewing basis in voxel-ratio-scaled space (image right, image down, depth). */
+  public record ViewBasis(Vector3d right, Vector3d down, Vector3d normal) {}
+
+  /** Geometry of the stretched image, used to draw the vessel path on it. */
+  public record StretchedFrame(
+      Vector3d center, ViewBasis basis, int widthPx, int heightPx, double unitsPerPixel) {
+
+    /** Image coordinates (pixels) of a point given in voxel-ratio-scaled space. */
+    public Point2D project(Vector3d point) {
+      Vector3d d = new Vector3d(point).sub(center);
+      return new Point2D.Double(
+          d.dot(basis.right()) / unitsPerPixel + widthPx / 2.0,
+          d.dot(basis.down()) / unitsPerPixel + heightPx / 2.0);
+    }
+  }
+
+  private volatile ReformationType reformationType = ReformationType.STRAIGHTENED;
+
+  /** Thickness (mm) of the maximum-intensity slab of the stretched view. */
+  private volatile double slabMm = 10.0;
+
+  private volatile ViewBasis viewBasis;
+  private volatile StretchedFrame stretchedFrame;
+
   // Live-edit binding to the source polyline. Optional.
   private MprView sourceView;
   private PolylineGraphic sourcePolyline;
@@ -205,6 +237,47 @@ public class CurvedMprAxis {
 
   public void setCenterlineLengthMm(double centerlineLengthMm) {
     this.centerlineLengthMm = centerlineLengthMm;
+  }
+
+  public ReformationType getReformationType() {
+    return reformationType;
+  }
+
+  public void setReformationType(ReformationType type) {
+    if (type != null && this.reformationType != type) {
+      this.reformationType = type;
+      updateImage();
+    }
+  }
+
+  public double getSlabMm() {
+    return slabMm;
+  }
+
+  /** Thickness (mm) of the MIP slab of the stretched view; regenerates it when displayed. */
+  public void setSlabMm(double slabMm) {
+    if (slabMm > 0 && this.slabMm != slabMm) {
+      this.slabMm = slabMm;
+      if (reformationType == ReformationType.STRETCHED) {
+        updateImage();
+      }
+    }
+  }
+
+  public ViewBasis getViewBasis() {
+    return viewBasis;
+  }
+
+  public void setViewBasis(ViewBasis viewBasis) {
+    this.viewBasis = viewBasis;
+  }
+
+  public StretchedFrame getStretchedFrame() {
+    return stretchedFrame;
+  }
+
+  public void setStretchedFrame(StretchedFrame stretchedFrame) {
+    this.stretchedFrame = stretchedFrame;
   }
 
   public boolean isVesselMode() {
