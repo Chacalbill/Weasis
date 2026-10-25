@@ -15,6 +15,7 @@ import java.beans.PropertyChangeListener;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import org.joml.Vector3d;
 import java.util.Optional;
 import javax.swing.Action;
 import javax.swing.JComponent;
@@ -505,6 +506,28 @@ public class MprContainer extends DicomViewerPlugin
                     }
                   });
             });
+  }
+
+  /**
+   * Build the curved-MPR axis from curve points in voxel-ratio-scaled coordinates (for example an
+   * automatically traced vessel centerline). The axis is not bound to any polyline.
+   */
+  public void openCurvedMpr(MprView sourceView, List<Vector3d> curvePoints) {
+    CurvedMprBuilder.buildAxis(sourceView, curvePoints)
+        .ifPresent(
+            axis ->
+                GuiExecutor.execute(
+                    () -> {
+                      if (!mprWithCurved.equals(cellManager.getLayoutModel())) {
+                        setLayoutModel(mprWithCurved);
+                      }
+                      CurvedMprView curvedView = getCurvedMprView();
+                      if (curvedView != null) {
+                        curvedView.setCurvedMprAxis(axis);
+                      } else {
+                        LOGGER.warn("Curved MPR layout does not expose a CurvedMprView cell");
+                      }
+                    }));
   }
 
   /** Build a DICOM series of perpendicular cross-section slices along the polyline */

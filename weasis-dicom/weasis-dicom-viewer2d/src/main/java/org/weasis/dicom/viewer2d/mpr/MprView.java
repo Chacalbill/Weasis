@@ -108,6 +108,8 @@ import org.weasis.dicom.viewer2d.mpr.cmpr.CrossSectionDialog;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CrossSectionParams;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprAxis;
 import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprView;
+import org.weasis.dicom.viewer2d.mpr.cmpr.VesselCenterline;
+import org.weasis.dicom.viewer2d.mpr.cmpr.CurvedMprBuilder;
 
 public class MprView extends View2d implements SliceCanvas, ViewProgress {
   private static final Logger LOGGER = LoggerFactory.getLogger(MprView.class);
@@ -524,6 +526,10 @@ public class MprView extends View2d implements SliceCanvas, ViewProgress {
       JMenuItem curvedMprItem = new JMenuItem(Messages.getString("build.panoramic.view"));
       curvedMprItem.addActionListener(e -> openCurvedMprFromPolyline(finalPolyline));
       popupMenu.add(curvedMprItem);
+      JMenuItem autoCenterlineItem =
+          new JMenuItem(Messages.getString("build.auto.centerline"));
+      autoCenterlineItem.addActionListener(e -> openAutoCenterlineFromPolyline(finalPolyline));
+      popupMenu.add(autoCenterlineItem);
       JMenuItem crossSectionsItem = new JMenuItem(Messages.getString("build.cross.sectional"));
       crossSectionsItem.addActionListener(e -> openCrossSectionsFromPolyline(finalPolyline));
       popupMenu.add(crossSectionsItem);
@@ -539,6 +545,52 @@ public class MprView extends View2d implements SliceCanvas, ViewProgress {
     if (container != null) {
       container.openCurvedMpr(this, polyline);
     }
+  }
+
+  /**
+   * Treat the polyline handles as points clicked inside a contrast-filled vessel, trace the
+   * vessel centerline between them in the background, and open it in the curved MPR.
+   */
+  private void openAutoCenterlineFromPolyline(PolylineGraphic polyline) {
+    if (polyline == null || polyline.getHandlePointList().size() < 2) {
+      return;
+    }
+    MprContainer container =
+        (MprContainer) SwingUtilities.getAncestorOfClass(MprContainer.class, this);
+    if (container == null || mprController == null || mprController.getVolume() == null) {
+      return;
+    }
+    final Volume<?, ?> volume = mprController.getVolume();
+    final List<Vector3d> seeds = CurvedMprBuilder.extractCurvePoints(this, polyline);
+    if (seeds.size() < 2) {
+      return;
+    }
+    new SwingWorker<List<Vector3d>, Void>() {
+      @Override
+      protected List<Vector3d> doInBackground() {
+        return VesselCenterline.trace(volume, seeds).orElse(null);
+      }
+
+      @Override
+      protected void done() {
+        try {
+          List<Vector3d> centerline = get();
+          if (centerline == null || centerline.size() < 2) {
+            JOptionPane.showMessageDialog(
+                MprView.this,
+                Messages.getString("auto.centerline.failed"),
+                Messages.getString("build.auto.centerline"),
+                JOptionPane.WARNING_MESSAGE);
+          } else {
+            container.openCurvedMpr(MprView.this, centerline);
+          }
+        } catch (InterruptedException ex) {
+          Thread.currentThread().interrupt();
+        } catch (Exception ex) {
+          LOGGER.error("Vessel centerline failed", ex);
+        }
+      }
+    }.execute();
   }
 
   /**
