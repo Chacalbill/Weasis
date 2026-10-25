@@ -170,7 +170,7 @@ public class CurvedMprView extends View2d {
     if (frame == null) {
       double rows = Math.max(1, Math.round(axis.getWidthMm() / pixelMm));
       for (int i = 0; i < 3; i++) {
-        java.awt.Point top = getMouseCoordinatesFromImage(columns[i] + 0.5, 0);
+        java.awt.Point top = getMouseCoordinatesFromImage(columns[i] + 0.5, 0.0);
         java.awt.Point bottom = getMouseCoordinatesFromImage(columns[i] + 0.5, rows);
         g2d.setColor(Color.YELLOW);
         g2d.setStroke(new java.awt.BasicStroke(i == 1 ? 2f : 1f));
